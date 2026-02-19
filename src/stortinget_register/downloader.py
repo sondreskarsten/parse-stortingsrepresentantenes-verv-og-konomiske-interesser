@@ -1,16 +1,17 @@
 """Async sync engine for Stortinget register PDFs.
 
-Pipeline:
-    1. DISCOVER — Scan all dates in the configured year range, HEAD each
-       candidate URL to find which PDFs exist on the Stortinget server.
-    2. DIFF — Compare discovered URLs against the manifest to find missing PDFs.
-    3. DOWNLOAD — Fetch missing PDFs and write to storage.
-    4. POPULATION — For each PDF date, fetch the register population
-       (representatives + government members) from the Stortinget API
-       and store as a companion JSON snapshot.
-    5. MANIFEST — Update manifest with new records.
+Tiered discovery pipeline:
+    1. SCRAPE  — Fetch landing page, extract latest PDF link directly.
+    2. GAPS    — Compare manifest against expected biweekly cadence.
+                 For new gaps, check best-guess dates (Mon-Fri of
+                 the expected week).
+    3. EXHAUST — For gaps already checked once without a hit, escalate
+                 to all weekdays in the gap range.
+    4. INITIAL — On first run (empty manifest), scan all weekdays in
+                 the configured year range.
 
-The engine supports graceful shutdown via max_runtime_minutes.
+After discovery, missing PDFs are downloaded with companion population
+snapshots from the Stortinget data API.
 """
 
 from __future__ import annotations
@@ -33,7 +34,17 @@ from tenacity import (
 
 from stortinget_register.checkpoint import CheckpointManager, CheckpointState
 from stortinget_register.config import Settings
-from stortinget_register.discovery import build_candidate_urls, generate_candidate_dates
+from stortinget_register.discovery import (
+    LANDING_PAGE,
+    GapRecord,
+    MissedHypotheses,
+    best_guess_dates,
+    build_candidate_urls,
+    estimate_expected_dates,
+    exhaustive_dates,
+    initial_scan_dates,
+    parse_pdf_url,
+)
 from stortinget_register.manifest import ManifestManager, ManifestRecord
 from stortinget_register.storage import StorageBackend
 from stortinget_register.stortinget_api import fetch_population, period_for_date
@@ -66,7 +77,7 @@ def _before_retry_log(retry_state: RetryCallState) -> None:
 
 
 class SyncEngine:
-    """Orchestrates discover → diff → download pipeline."""
+    """Orchestrates tiered discover → diff → download pipeline."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -92,16 +103,25 @@ class SyncEngine:
             return True
         return self._shutdown_requested
 
+    # --- Missed hypotheses persistence ---
+
+    def _load_missed(self) -> MissedHypotheses:
+        path = self._settings.missed_hypotheses_path
+        if self._storage.exists(path):
+            return MissedHypotheses.from_json(self._storage.read_bytes(path))
+        return MissedHypotheses()
+
+    def _save_missed(self, missed: MissedHypotheses) -> None:
+        self._storage.write_bytes(self._settings.missed_hypotheses_path, missed.to_json())
+
+    # --- Main entry ---
+
     async def run(self) -> None:
         self._storage.check_credentials()
         state = self._checkpoint_mgr.load()
         state.run_started_at = self._now_iso()
 
-        logger.info(
-            "sync_started",
-            storage=self._settings.storage_path,
-            scan_range=f"{self._settings.scan_start_year}-{self._settings.scan_end_year}",
-        )
+        logger.info("sync_started", storage=self._settings.storage_path)
 
         connector = aiohttp.TCPConnector(limit=self._settings.max_concurrent)
         timeout = aiohttp.ClientTimeout(total=30)
@@ -132,24 +152,207 @@ class SyncEngine:
         self._checkpoint_mgr.clear()
         logger.info("sync_finished", **self._stats)
 
+    # --- Tiered discovery ---
+
     async def _discover(
         self,
         session: aiohttp.ClientSession,
         state: CheckpointState,
     ) -> list[dict]:
+        discovered: list[dict] = []
+
+        # Tier 0: scrape landing page for latest
+        scraped = await self._scrape_latest(session)
+        if scraped:
+            discovered.append(scraped)
+            logger.info("scrape_hit", date=scraped["date"], url=scraped["url"])
+
+        known_dates = self._manifest.get_downloaded_dates()
+
+        if not known_dates:
+            # First run ever — full initial scan (scraped item included after)
+            initial = await self._initial_scan(session, state)
+            for item in discovered:
+                if item["url"] not in {i["url"] for i in initial}:
+                    initial.append(item)
+            return initial
+
+        all_known = set(known_dates)
+        for item in discovered:
+            all_known.add(item["date"])
+
+        sorted_known = sorted(all_known)
+        last_known = date.fromisoformat(sorted_known[-1])
+        today = date.today()
+
+        # Check for internal gaps (between consecutive known dates)
+        has_internal_gaps = False
+        for i in range(len(sorted_known) - 1):
+            d1 = date.fromisoformat(sorted_known[i])
+            d2 = date.fromisoformat(sorted_known[i + 1])
+            if (d2 - d1).days > 21:
+                has_internal_gaps = True
+                break
+
+        has_trailing_gap = (today - last_known).days > 21
+
+        if not has_internal_gaps and not has_trailing_gap:
+            logger.info("discover_up_to_date", last_known=last_known.isoformat())
+            self._stats["discovered"] = len(discovered)
+            return discovered
+
+        # Tier 1+2: gap analysis
+        missed = self._load_missed()
+        gap_dates = await self._fill_gaps(session, state, sorted_known, today, missed)
+        discovered.extend(gap_dates)
+
+        self._stats["discovered"] = len(discovered)
+        return discovered
+
+    async def _scrape_latest(self, session: aiohttp.ClientSession) -> dict | None:
+        """Fetch landing page and extract the current PDF link."""
+        try:
+            async with session.get(LANDING_PAGE) as resp:
+                if resp.status != 200:
+                    logger.warning("scrape_failed", status=resp.status)
+                    return None
+                html = await resp.text()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning("scrape_error", error=str(exc))
+            return None
+
+        parsed = parse_pdf_url(html)
+        if not parsed:
+            logger.warning("scrape_no_link")
+            return None
+
+        url, d, folder = parsed
+        return {"date": d.isoformat(), "url": url, "period_folder": folder}
+
+    async def _fill_gaps(
+        self,
+        session: aiohttp.ClientSession,
+        state: CheckpointState,
+        sorted_known: list[str],
+        today: date,
+        missed: MissedHypotheses,
+    ) -> list[dict]:
+        """Analyze gaps between all consecutive manifest dates and from last to today."""
+        pairs: list[tuple[date, date]] = []
+        for i in range(len(sorted_known) - 1):
+            d1 = date.fromisoformat(sorted_known[i])
+            d2 = date.fromisoformat(sorted_known[i + 1])
+            if (d2 - d1).days > 21:
+                pairs.append((d1, d2))
+
+        last_known = date.fromisoformat(sorted_known[-1])
+        if (today - last_known).days > 21:
+            pairs.append((last_known, today))
+
+        if not pairs:
+            return []
+
+        logger.info("gap_analysis", gaps_found=len(pairs))
+
+        all_dates_to_check: list[date] = []
+        gap_tracking: dict[str, tuple[date, date, date]] = {}
+
+        for gap_start, gap_end in pairs:
+            expected = estimate_expected_dates(gap_start, gap_end)
+            for exp_date in expected:
+                gap_key = exp_date.isoformat()
+                existing = missed.get_gap(gap_key)
+
+                if existing and existing.check_count >= 1:
+                    dates = exhaustive_dates(gap_start, gap_end)
+                    already_checked = set(existing.dates_checked)
+                    dates = [d for d in dates if d.isoformat() not in already_checked]
+                    logger.info(
+                        "tier_exhaustive",
+                        gap_key=gap_key,
+                        check_count=existing.check_count,
+                        new_dates=len(dates),
+                    )
+                else:
+                    dates = best_guess_dates(exp_date)
+                    dates = [d for d in dates if gap_start < d < gap_end and d <= today]
+                    logger.info("tier_best_guess", expected=gap_key, dates=len(dates))
+
+                gap_tracking[gap_key] = (gap_start, gap_end, exp_date)
+                all_dates_to_check.extend(dates)
+
+        known_set = set(sorted_known)
+        all_dates_to_check = sorted(set(all_dates_to_check))
+        all_dates_to_check = [d for d in all_dates_to_check if d.isoformat() not in known_set]
+
+        logger.info("gap_check_start", dates_to_check=len(all_dates_to_check))
+
+        discovered: list[dict] = []
+        found_dates: set[str] = set()
+
+        batch_size = 50
+        for i in range(0, len(all_dates_to_check), batch_size):
+            if self._should_shutdown():
+                break
+            batch = all_dates_to_check[i : i + batch_size]
+            tasks = [self._check_date(session, d) for d in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for d, result in zip(batch, results):
+                state.dates_scanned += 1
+                if isinstance(result, Exception):
+                    continue
+                if result:
+                    for url in result:
+                        folder = url.split("/")[-2]
+                        discovered.append({
+                            "date": d.isoformat(),
+                            "url": url,
+                            "period_folder": folder,
+                        })
+                        found_dates.add(d.isoformat())
+                        state.pdfs_found += 1
+
+        for gap_key, (gap_start, gap_end, exp_date) in gap_tracking.items():
+            existing = missed.get_gap(gap_key)
+            checked_dates = [
+                d.isoformat()
+                for d in all_dates_to_check
+                if gap_start < d < gap_end
+            ]
+
+            if any(gap_start.isoformat() < fd < gap_end.isoformat() for fd in found_dates):
+                missed.remove_gap(gap_key)
+                logger.info("gap_resolved", gap_key=gap_key)
+            else:
+                prev_checked = existing.dates_checked if existing else []
+                all_checked = sorted(set(prev_checked + checked_dates))
+                count = (existing.check_count if existing else 0) + 1
+                missed.upsert_gap(
+                    gap_key,
+                    GapRecord(
+                        gap_start=gap_start.isoformat(),
+                        gap_end=gap_end.isoformat(),
+                        expected_date=exp_date.isoformat(),
+                        check_count=count,
+                        dates_checked=all_checked,
+                    ),
+                )
+
+        self._save_missed(missed)
+        logger.info("gap_check_complete", found=len(discovered))
+        return discovered
+
+    async def _initial_scan(
+        self,
+        session: aiohttp.ClientSession,
+        state: CheckpointState,
+    ) -> list[dict]:
+        """First run: scan all weekdays in the configured year range."""
         end_year = self._settings.scan_end_year or date.today().year
-        start = date(self._settings.scan_start_year, 1, 1)
-        end = date(end_year, 12, 31)
-        if end > date.today():
-            end = date.today()
+        all_dates = initial_scan_dates(self._settings.scan_start_year, end_year)
 
-        all_dates = generate_candidate_dates(start, end)
-
-        if state.last_date_scanned:
-            resume_date = date.fromisoformat(state.last_date_scanned)
-            all_dates = [d for d in all_dates if d > resume_date]
-
-        logger.info("discover_start", dates_to_scan=len(all_dates))
+        logger.info("initial_scan_start", dates_to_scan=len(all_dates))
 
         discovered: list[dict] = []
         batch_size = 50
@@ -167,7 +370,6 @@ class SyncEngine:
                 state.last_date_scanned = d.isoformat()
 
                 if isinstance(result, Exception):
-                    logger.warning("discover_error", date=d.isoformat(), error=str(result))
                     continue
 
                 if result:
@@ -182,17 +384,12 @@ class SyncEngine:
 
             if (i // batch_size + 1) % 10 == 0:
                 self._checkpoint_mgr.save(state)
-                logger.info(
-                    "discover_progress",
-                    dates_scanned=state.dates_scanned,
-                    total=len(all_dates),
-                    found=state.pdfs_found,
-                )
 
         self._stats["discovered"] = len(discovered)
-        self._checkpoint_mgr.save(state)
-        logger.info("discover_complete", found=len(discovered))
+        logger.info("initial_scan_complete", found=len(discovered))
         return discovered
+
+    # --- URL checking ---
 
     async def _check_date(self, session: aiohttp.ClientSession, d: date) -> list[str]:
         urls = build_candidate_urls(d)
@@ -206,6 +403,8 @@ class SyncEngine:
                 except (aiohttp.ClientError, asyncio.TimeoutError):
                     pass
         return hits
+
+    # --- Download ---
 
     async def _download_missing(
         self,
@@ -318,7 +517,6 @@ class SyncEngine:
         pdf_date: date,
         period_id: str,
     ) -> list[dict]:
-        """Fetch population for a period, caching per period_id."""
         if period_id in self._population_cache:
             return self._population_cache[period_id]
 

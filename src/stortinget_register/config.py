@@ -80,3 +80,7 @@ class Settings(BaseSettings):
 
     def population_path(self, date_str: str) -> str:
         return f"{self.storage_path}/population/pr-{date_str}.json"
+
+    @property
+    def missed_hypotheses_path(self) -> str:
+        return f"{self.storage_path}/missed_hypotheses.json"
