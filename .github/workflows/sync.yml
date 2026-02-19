@@ -2,7 +2,7 @@ name: Stortinget Register Sync
 
 on:
   schedule:
-    - cron: '0 6 * * 5'  # Weekly Friday 06:00 UTC (after Stortinget publishes)
+    - cron: '0 6 * * 5'
   workflow_dispatch:
     inputs:
       start_year:
@@ -19,11 +19,11 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  id-token: write
   contents: read
+  id-token: write
 
 env:
-  STORAGE_PATH: ${{ vars.STORTING_STORAGE_PATH || 'gs://github-sondreskarsten-parse-stortingsrepresentantenes-ve-dd3f18/data' }}
+  STORAGE_PATH: gs://${{ vars.GCS_BUCKET }}/data
 
 jobs:
   sync:
@@ -38,15 +38,15 @@ jobs:
 
       - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
       - name: Install
         run: uv sync --frozen --extra gcs
 
       - name: Sync
         run: |
-          uv run stortinget-register sync "$STORAGE_PATH" \
+          uv run stortinget-register sync ${{ env.STORAGE_PATH }} \
             --start-year ${{ inputs.start_year || '2021' }} \
             ${{ inputs.end_year && format('--end-year {0}', inputs.end_year) || '' }} \
             --max-runtime 25 \
