@@ -1,0 +1,53 @@
+name: Stortinget Register Sync
+
+on:
+  schedule:
+    - cron: '0 6 * * 5'  # Weekly Friday 06:00 UTC (after Stortinget publishes)
+  workflow_dispatch:
+    inputs:
+      start_year:
+        description: 'Start year for scanning'
+        type: number
+        default: 2021
+      end_year:
+        description: 'End year for scanning (empty = current year)'
+        type: number
+        required: false
+
+concurrency:
+  group: stortinget-sync
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  STORAGE_PATH: ${{ vars.STORTING_STORAGE_PATH || 'gs://github-sondreskarsten-parse-stortingsrepresentantenes-ve-dd3f18/data' }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Install
+        run: uv sync --frozen --extra gcs
+
+      - name: Sync
+        run: |
+          uv run stortinget-register sync "$STORAGE_PATH" \
+            --start-year ${{ inputs.start_year || '2021' }} \
+            ${{ inputs.end_year && format('--end-year {0}', inputs.end_year) || '' }} \
+            --max-runtime 25 \
+            --log-level INFO
