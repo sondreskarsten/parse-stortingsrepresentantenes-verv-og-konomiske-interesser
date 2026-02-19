@@ -5,7 +5,10 @@ Pipeline:
        candidate URL to find which PDFs exist on the Stortinget server.
     2. DIFF — Compare discovered URLs against the manifest to find missing PDFs.
     3. DOWNLOAD — Fetch missing PDFs and write to storage.
-    4. MANIFEST — Update manifest with new records.
+    4. POPULATION — For each PDF date, fetch the register population
+       (representatives + government members) from the Stortinget API
+       and store as a companion JSON snapshot.
+    5. MANIFEST — Update manifest with new records.
 
 The engine supports graceful shutdown via max_runtime_minutes.
 """
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from datetime import UTC, date, datetime
 
@@ -32,6 +36,7 @@ from stortinget_register.config import Settings
 from stortinget_register.discovery import build_candidate_urls, generate_date_range
 from stortinget_register.manifest import ManifestManager, ManifestRecord
 from stortinget_register.storage import StorageBackend
+from stortinget_register.stortinget_api import fetch_population, period_for_date
 
 logger = structlog.get_logger()
 
@@ -72,6 +77,7 @@ class SyncEngine:
         self._start_time = time.monotonic()
         self._shutdown_requested = False
         self._stats = {"discovered": 0, "downloaded": 0, "skipped": 0, "failed": 0}
+        self._population_cache: dict[str, list[dict]] = {}
 
     def _time_remaining(self) -> float | None:
         if self._settings.max_runtime_minutes <= 0:
@@ -247,6 +253,8 @@ class SyncEngine:
         d = item["date"]
         folder = item.get("period_folder")
         now = self._now_iso()
+        pdf_date = date.fromisoformat(d)
+        pid = period_for_date(pdf_date)
 
         try:
             data = await self._fetch_with_retry(session, url)
@@ -256,6 +264,7 @@ class SyncEngine:
                 date=d,
                 url=url,
                 period_folder=folder,
+                period_id=pid,
                 download_timestamp=now,
                 status="failed",
                 error_detail=str(exc)[:500],
@@ -265,6 +274,27 @@ class SyncEngine:
         pdf_path = self._settings.pdf_path(d)
         self._storage.write_bytes(pdf_path, data)
 
+        population_path = None
+        population_hash = None
+        population_count = None
+
+        try:
+            pop_dicts = await self._get_population(session, pdf_date, pid)
+            population_snapshot = {
+                "date": d,
+                "period_id": pid,
+                "population": pop_dicts,
+            }
+            pop_bytes = json.dumps(
+                population_snapshot, indent=2, ensure_ascii=False
+            ).encode("utf-8")
+            population_hash = hashlib.sha256(pop_bytes).hexdigest()
+            population_count = len(pop_dicts)
+            population_path = self._settings.population_path(d)
+            self._storage.write_bytes(population_path, pop_bytes)
+        except Exception as exc:
+            logger.warning("population_fetch_failed", date=d, error=str(exc))
+
         return ManifestRecord(
             date=d,
             url=url,
@@ -272,9 +302,29 @@ class SyncEngine:
             pdf_path=pdf_path,
             file_hash=file_hash,
             file_size_bytes=len(data),
+            population_path=population_path,
+            population_hash=population_hash,
+            population_count=population_count,
+            period_id=pid,
             download_timestamp=now,
             status="success",
         )
+
+    async def _get_population(
+        self,
+        session: aiohttp.ClientSession,
+        pdf_date: date,
+        period_id: str,
+    ) -> list[dict]:
+        """Fetch population for a period, caching per period_id."""
+        if period_id in self._population_cache:
+            return self._population_cache[period_id]
+
+        persons = await fetch_population(session, pdf_date)
+        pop_dicts = [p.to_dict() for p in persons]
+        self._population_cache[period_id] = pop_dicts
+        logger.info("population_fetched", period_id=period_id, count=len(pop_dicts))
+        return pop_dicts
 
     @retry(
         retry=retry_if_exception(_is_retryable),

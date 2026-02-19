@@ -77,3 +77,6 @@ class Settings(BaseSettings):
 
     def pdf_path(self, date_str: str) -> str:
         return f"{self.storage_path}/pdfs/pr-{date_str}.pdf"
+
+    def population_path(self, date_str: str) -> str:
+        return f"{self.storage_path}/population/pr-{date_str}.json"

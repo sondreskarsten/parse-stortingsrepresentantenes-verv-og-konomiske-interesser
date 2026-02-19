@@ -58,14 +58,45 @@ stortinget-register status ./data
 
 ```
 {storage_path}/
-├── manifest.parquet          # Download tracking (date, url, hash, status)
+├── manifest.parquet          # Download tracking (date, url, hash, status, population)
 ├── checkpoint.json           # Resume state for interrupted runs
-└── pdfs/
-    ├── pr-2022-10-18.pdf
-    ├── pr-2022-11-07.pdf
-    ├── pr-2023-01-18.pdf
+├── pdfs/
+│   ├── pr-2022-10-18.pdf
+│   ├── pr-2023-01-18.pdf
+│   └── ...
+└── population/
+    ├── pr-2022-10-18.json    # Representatives + govt members at that date
+    ├── pr-2023-01-18.json
     └── ...
 ```
+
+### Population Snapshot Format
+
+Each population JSON contains the persons in scope for that register date, fetched from the [Stortinget data API](https://data.stortinget.no/eksport). Persons are sorted by `etternavn` (last name) then `fornavn`.
+
+```json
+{
+  "date": "2025-01-14",
+  "period_id": "2021-2025",
+  "population": [
+    {
+      "etternavn": "Støre",
+      "fornavn": "Jonas Gahr",
+      "foedselsdato": "1960-08-25",
+      "id": "JGS",
+      "parti": "A",
+      "fylke": "Statsministerens kontor",
+      "rolle": "Statsminister",
+      "vara_representant": false
+    }
+  ]
+}
+```
+
+Population includes:
+- All elected representatives for the parliamentary period
+- Substitute representatives (`vara_representant: true`)
+- Government members (ministers) with their title as `rolle`
 
 ## Configuration
 

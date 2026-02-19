@@ -25,6 +25,10 @@ MANIFEST_SCHEMA = pa.schema(
         pa.field("pdf_path", pa.string()),
         pa.field("file_hash", pa.string()),
         pa.field("file_size_bytes", pa.int64()),
+        pa.field("population_path", pa.string()),
+        pa.field("population_hash", pa.string()),
+        pa.field("population_count", pa.int32()),
+        pa.field("period_id", pa.string()),
         pa.field("download_timestamp", pa.string()),
         pa.field("status", pa.string()),
         pa.field("error_detail", pa.string()),
@@ -40,6 +44,10 @@ class ManifestRecord:
     pdf_path: str | None = None
     file_hash: str | None = None
     file_size_bytes: int | None = None
+    population_path: str | None = None
+    population_hash: str | None = None
+    population_count: int | None = None
+    period_id: str | None = None
     download_timestamp: str | None = None
     status: str = "pending"
     error_detail: str | None = None
@@ -60,6 +68,10 @@ def _record_to_dict(r: ManifestRecord) -> dict:
         "pdf_path": r.pdf_path,
         "file_hash": r.file_hash,
         "file_size_bytes": r.file_size_bytes,
+        "population_path": r.population_path,
+        "population_hash": r.population_hash,
+        "population_count": r.population_count,
+        "period_id": r.period_id,
         "download_timestamp": r.download_timestamp,
         "status": r.status,
         "error_detail": r.error_detail,
