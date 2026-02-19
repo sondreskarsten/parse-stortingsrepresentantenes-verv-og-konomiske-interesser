@@ -71,11 +71,21 @@ def build_candidate_urls(d: date) -> list[str]:
     return urls
 
 
-def generate_date_range(start_date: date, end_date: date) -> list[date]:
-    """Return all dates from start_date to end_date inclusive."""
-    dates = []
+def generate_candidate_dates(start_date: date, end_date: date) -> list[date]:
+    """Return plausible publication dates between start_date and end_date.
+
+    The register publishes biweekly on weekdays (Mon-Fri). No weekend
+    publications exist in the historical record. July is skipped except
+    for the first week (one July leak exists historically).
+    """
+    dates: list[date] = []
     d = start_date
     while d <= end_date:
-        dates.append(d)
+        if d.weekday() < 5:  # Mon-Fri
+            if d.month == 7:
+                if d.day <= 7:
+                    dates.append(d)
+            else:
+                dates.append(d)
         d += timedelta(days=1)
     return dates

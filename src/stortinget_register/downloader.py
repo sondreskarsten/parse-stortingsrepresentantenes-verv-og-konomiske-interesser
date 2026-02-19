@@ -33,7 +33,7 @@ from tenacity import (
 
 from stortinget_register.checkpoint import CheckpointManager, CheckpointState
 from stortinget_register.config import Settings
-from stortinget_register.discovery import build_candidate_urls, generate_date_range
+from stortinget_register.discovery import build_candidate_urls, generate_candidate_dates
 from stortinget_register.manifest import ManifestManager, ManifestRecord
 from stortinget_register.storage import StorageBackend
 from stortinget_register.stortinget_api import fetch_population, period_for_date
@@ -106,7 +106,9 @@ class SyncEngine:
         connector = aiohttp.TCPConnector(limit=self._settings.max_concurrent)
         timeout = aiohttp.ClientTimeout(total=30)
 
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async with aiohttp.ClientSession(
+            connector=connector, timeout=timeout, trust_env=True
+        ) as session:
             discovered = await self._discover(session, state)
 
             if self._should_shutdown():
@@ -141,7 +143,7 @@ class SyncEngine:
         if end > date.today():
             end = date.today()
 
-        all_dates = generate_date_range(start, end)
+        all_dates = generate_candidate_dates(start, end)
 
         if state.last_date_scanned:
             resume_date = date.fromisoformat(state.last_date_scanned)
