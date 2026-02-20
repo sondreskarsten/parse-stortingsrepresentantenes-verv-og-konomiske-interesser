@@ -25,7 +25,4 @@ jobs:
 
       - name: Sync repo to GCS bucket
         run: |
-          gsutil -m rsync -r -d \
-            --exclude='.git/.*' \
-            . \
-            gs://${{ vars.GCS_BUCKET }}/
+          gsutil -m rsync -r -d -x '\.git/.*' . gs://${{ vars.GCS_BUCKET }}/
