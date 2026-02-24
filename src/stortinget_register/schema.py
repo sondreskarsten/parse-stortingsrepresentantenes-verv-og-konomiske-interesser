@@ -396,6 +396,123 @@ class PersonEntry(BaseModel):
 # --- Document-level ---
 
 
+# --- Org-centric extraction and matching ---
+
+
+class OrgMention(BaseModel):
+    """A single organisation reference extracted from a register entry.
+
+    One person entry can produce multiple OrgMention records (e.g.
+    Astrup's §2 yields 5 board positions, §9 yields 10+ holdings).
+    """
+
+    section: str = Field(description="Source section: '§2', '§3', '§4', '§5', '§8', '§9', '§9a'")
+    organisation_name: str = Field(description="Organisation name as stated in text")
+    org_number: str | None = Field(
+        default=None, description="9-digit BRREG org number if found inline via regex"
+    )
+    company_form: str | None = Field(
+        default=None,
+        description="Legal form as stated: 'AS', 'ASA', 'ANS', 'DA', 'KS', 'ENK', 'PLC', 'AB', etc.",
+    )
+    role_claimed: str | None = Field(
+        default=None,
+        description=(
+            "Role or relationship claimed: 'Styreleder', 'Styremedlem', "
+            "'Daglig leder', 'eier', 'innehaver', 'aksjer'"
+        ),
+    )
+    ownership_pct: str | None = Field(
+        default=None, description="Ownership percentage verbatim: '100%', 'under 1 pst.'"
+    )
+    num_shares: int | None = Field(default=None, description="Share count if stated")
+    compensated: bool | None = Field(default=None, description="§2 compensation flag")
+    is_listed_minor_holding: bool = Field(
+        default=False,
+        description="True if ASA with <1% ownership — skip roller match",
+    )
+    is_foreign: bool = Field(
+        default=False,
+        description="True if non-Norwegian entity (PLC, AB, GmbH, KG, etc.)",
+    )
+    raw_text: str = Field(description="Verbatim section text this mention was extracted from")
+
+    person_name: str = Field(description="Person name from register: 'Etternavn, Fornavn'")
+    person_party: str = Field(description="Party abbreviation")
+    person_district: str = Field(description="Electoral district")
+    publication_date: str = Field(description="Publication date ISO YYYY-MM-DD")
+
+
+class OrgResolution(BaseModel):
+    """Result of resolving an organisation name to a BRREG org number."""
+
+    organisation_name_normalised: str = Field(description="Uppercased, stripped form")
+    org_number: str | None = Field(default=None, description="Resolved 9-digit org number")
+    brreg_name: str | None = Field(
+        default=None, description="Official name from BRREG if resolved"
+    )
+    confidence: str = Field(
+        description="'confirmed' (exact match or inline), 'candidate' (fuzzy), 'not_found', 'foreign'"
+    )
+    resolution_method: str | None = Field(
+        default=None,
+        description="'inline', 'exact_name', 'fuzzy_name', 'manual'",
+    )
+
+
+class RollerMatch(BaseModel):
+    """Result of matching a register person-org pair against BRREG roller.
+
+    The roller API returns current state only. For older PDFs the match
+    may fail due to role turnover — flagged via match_confidence.
+    """
+
+    org_number: str = Field(description="Resolved BRREG org number")
+    org_resolution_confidence: str = Field(description="From OrgResolution.confidence")
+
+    roller_person_fornavn: str | None = Field(default=None)
+    roller_person_mellomnavn: str | None = Field(default=None)
+    roller_person_etternavn: str | None = Field(default=None)
+    roller_person_dob: str | None = Field(
+        default=None, description="fodselsdato from roller API: 'YYYY-MM-DD'"
+    )
+    roller_role_code: str | None = Field(
+        default=None,
+        description="BRREG rolle code: LEDE, MEDL, NEST, VARA, DAGL, INNH, DTSO, DTPR, KOMP",
+    )
+    roller_role_description: str | None = Field(default=None)
+    roller_fratraadt: bool | None = Field(
+        default=None, description="True if resigned in BRREG"
+    )
+    roller_snapshot_date: str = Field(
+        description="Date the roller data was fetched: ISO YYYY-MM-DD"
+    )
+
+    match_method: str | None = Field(
+        default=None, description="'dob_exact', 'name_exact', 'name_fuzzy'"
+    )
+    match_confidence: str = Field(
+        description=(
+            "'confirmed' (DOB+name match), 'candidate' (name-only fuzzy), "
+            "'no_match' (current PDF, person not in roller), "
+            "'historic_no_match' (old PDF, likely role turnover)"
+        ),
+    )
+    role_consistent: bool | None = Field(
+        default=None,
+        description="True if claimed role (e.g. Styreleder) matches roller role code (LEDE)",
+    )
+
+    person_name: str = Field(description="Person name from register")
+    person_dob_from_population: str | None = Field(
+        default=None, description="foedselsdato from stortinget API population JSON"
+    )
+    publication_date: str = Field(description="Publication date of the source PDF")
+
+
+# --- Document-level ---
+
+
 class RegisterPublication(BaseModel):
     """One complete publication of the economic interests register."""
 
