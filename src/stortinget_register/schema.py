@@ -1,27 +1,25 @@
 """Pydantic extraction schema for Stortinget economic interests register.
 
-Derived from structural analysis of 89 PDFs (Oct 2022 → Feb 2026, 180–306
-persons per publication). The register is governed by Stortingets
-forretningsorden §76 and the register regulation §§1–16.
+Corporation-centric subset. Only sections referencing organisations
+retained for BRREG Enhetsregisteret roller matching pipeline.
 
-Section types observed across the full corpus:
+Retained sections (org references):
 
-    §2   Styreverv mv.                 19,560 occurrences
-    §3   Selvstendig næring             6,049
-    §4   Lønnet stilling m.v.           7,447
-    §5   Tidligere arbeidsgiver         6,049
+    §2   Styreverv mv.                 19,560 occurrences  -> governance roles
+    §3   Selvstendig naering            6,049              -> business ownership
+    §4   Loennet stilling m.v.          7,447              -> employer orgs
+    §5   Tidligere arbeidsgiver         6,049              -> former employer orgs
+    §8   Eiendom i naering              1,989              -> property via entities
+    §9   Selskapsinteresser             8,970              -> shareholdings
+    §9a  Gjeld i naeringsvirksomhet       271              -> business debt
+
+Dropped sections (no org matching value):
+
     §6   Framtidig arbeidsgiver         1,422
-    §7   Økonomisk støtte                 882
-    §8   Eiendom i næring               1,989
-    §9   Selskapsinteresser             8,970
-    §9a  Gjeld i næringsvirksomhet        271
+    §7   Oekonomisk stoette               882
     §10  Utenlandsreiser                2,048
     §11  Gaver                          2,721
     §15  Andre forhold                  1,066
-
-Content is free-text with varying structure. Sub-models extract
-recognizable patterns while preserving raw text for unstructured
-portions.
 """
 
 from __future__ import annotations
@@ -44,14 +42,14 @@ class BoardPosition(BaseModel):
         description=(
             "Role held: e.g. 'Styreleder', 'Styremedlem', 'Varamedlem', "
             "'Medlem', 'Nestleder', 'Leder', 'Gruppeleder', "
-            "'Kommunestyrerepresentant', 'Ordfører'"
+            "'Kommunestyrerepresentant', 'Ordfoerer'"
         ),
     )
     compensated: bool | None = Field(
         default=None,
         description=(
-            "Whether compensation is received. True if 'lønnet', 'godtgjørelse', "
-            "'honorar'. False if 'ulønnet', 'ikke lønnet', 'ikke godtgjørelse'. "
+            "Whether compensation is received. True if 'loennet', 'godtgjoerelse', "
+            "'honorar'. False if 'uloennet', 'ikke loennet', 'ikke godtgjoerelse'. "
             "None if ambiguous."
         ),
     )
@@ -75,7 +73,7 @@ class BoardPositions(BaseModel):
     raw_text: str = Field(description="Full verbatim text of the §2 entry")
 
 
-# --- §3: Selvstendig næring (Self-employed / independent business) ---
+# --- §3: Selvstendig naering (Self-employed / independent business) ---
 
 
 class SelfEmployment(BaseModel):
@@ -104,7 +102,7 @@ class SelfEmploymentSection(BaseModel):
     raw_text: str = Field(description="Full verbatim text of the §3 entry")
 
 
-# --- §4: Lønnet stilling m.v. (Paid employment) ---
+# --- §4: Loennet stilling m.v. (Paid employment) ---
 
 
 class PaidEmployment(BaseModel):
@@ -122,7 +120,7 @@ class PaidEmployment(BaseModel):
 
 
 class PaidEmploymentSection(BaseModel):
-    """§4 — Lønnet stilling eller engasjement."""
+    """§4 — Loennet stilling eller engasjement."""
 
     entries: list[PaidEmployment] = Field(default_factory=list)
     raw_text: str = Field(description="Full verbatim text of the §4 entry")
@@ -137,7 +135,7 @@ class FormerEmployer(BaseModel):
     employer: str = Field(description="Former employer name")
     arrangement: str = Field(
         description=(
-            "Nature of arrangement: e.g. 'permisjon uten lønn', "
+            "Nature of arrangement: e.g. 'permisjon uten loenn', "
             "'pensjonsrettigheter', 'feriepenger'"
         ),
     )
@@ -156,48 +154,7 @@ class FormerEmployerSection(BaseModel):
     raw_text: str = Field(description="Full verbatim text of the §5 entry")
 
 
-# --- §6: Framtidig arbeidsgiver (Future employer) ---
-
-
-class FutureEmployer(BaseModel):
-    """Agreement with a future employer or engagement."""
-
-    employer: str = Field(description="Future employer or engagement partner")
-    description: str = Field(description="Nature of the future arrangement")
-
-
-class FutureEmployerSection(BaseModel):
-    """§6 — Avtaler med fremtidige arbeidsgivere."""
-
-    entries: list[FutureEmployer] = Field(default_factory=list)
-    raw_text: str = Field(description="Full verbatim text of the §6 entry")
-
-
-# --- §7: Økonomisk støtte (Financial support) ---
-
-
-class FinancialSupport(BaseModel):
-    """Financial support from external sources."""
-
-    source: str = Field(description="Name of supporting entity or person")
-    description: str = Field(description="Nature of support")
-    amount_nok: float | None = Field(
-        default=None, description="Amount if >50k NOK threshold triggered"
-    )
-    exceeds_threshold: bool = Field(
-        default=False,
-        description="True if support from same source exceeds 50k NOK per calendar year",
-    )
-
-
-class FinancialSupportSection(BaseModel):
-    """§7 — Økonomisk støtte eller vederlag."""
-
-    entries: list[FinancialSupport] = Field(default_factory=list)
-    raw_text: str = Field(description="Full verbatim text of the §7 entry")
-
-
-# --- §8: Eiendom i næring (Business real estate) ---
+# --- §8: Eiendom i naering (Business real estate) ---
 
 
 class BusinessProperty(BaseModel):
@@ -215,13 +172,17 @@ class BusinessProperty(BaseModel):
         default=None,
         description=(
             "Property type: 'landbrukseiendom', 'utleieleilighet', "
-            "'næringseiendom', 'tomt'"
+            "'naeringseiendom', 'tomt'"
         ),
+    )
+    via_company: str | None = Field(
+        default=None,
+        description="Holding company name if property held via entity",
     )
 
 
 class BusinessPropertySection(BaseModel):
-    """§8 — Fast eiendom i næringsvirksomhet."""
+    """§8 — Fast eiendom i naeringsvirksomhet."""
 
     entries: list[BusinessProperty] = Field(default_factory=list)
     raw_text: str = Field(description="Full verbatim text of the §8 entry")
@@ -263,7 +224,7 @@ class ShareTransaction(BaseModel):
     """A reported share transaction under §9 para 2."""
 
     date: str = Field(description="Transaction date as stated, e.g. '26.01.2026'")
-    direction: str = Field(description="'Kjøp' (buy) or 'Salg' (sell)")
+    direction: str = Field(description="'Kjoep' (buy) or 'Salg' (sell)")
     company_name: str = Field(description="Security/company name")
     company_form: str | None = Field(default=None)
     ownership_pct: str | None = Field(default=None)
@@ -283,7 +244,7 @@ class CompanyInterestsSection(BaseModel):
     raw_text: str = Field(description="Full verbatim text of the §9 entry")
 
 
-# --- §9a: Gjeld i næringsvirksomhet (Business debt) ---
+# --- §9a: Gjeld i naeringsvirksomhet (Business debt) ---
 
 
 class BusinessDebt(BaseModel):
@@ -298,73 +259,21 @@ class BusinessDebt(BaseModel):
 
 
 class BusinessDebtSection(BaseModel):
-    """§9a — Gjeld i næringsvirksomhet / garantiansvar."""
+    """§9a — Gjeld i naeringsvirksomhet / garantiansvar."""
 
     entries: list[BusinessDebt] = Field(default_factory=list)
     raw_text: str = Field(description="Full verbatim text of the §9a entry")
-
-
-# --- §10: Utenlandsreiser (Foreign travel) ---
-
-
-class ForeignTravel(BaseModel):
-    """A foreign trip where costs were externally covered."""
-
-    date_range: str = Field(description="Trip dates as stated")
-    destination: str = Field(description="Country or city visited")
-    sponsor: str = Field(description="Who covered the expenses")
-    purpose: str | None = Field(default=None, description="Trip purpose if stated")
-
-
-class ForeignTravelSection(BaseModel):
-    """§10 — Utenlandsreiser med ekstern finansiering."""
-
-    trips: list[ForeignTravel] = Field(default_factory=list)
-    raw_text: str = Field(description="Full verbatim text of the §10 entry")
-
-
-# --- §11: Gaver (Gifts) ---
-
-
-class Gift(BaseModel):
-    """A gift or economic benefit exceeding 2,000 NOK."""
-
-    description: str = Field(description="What was given")
-    giver: str = Field(description="Who gave it")
-    date: str | None = Field(default=None, description="Date received if stated")
-    value_nok: float | None = Field(default=None, description="Value in NOK if stated")
-
-
-class GiftSection(BaseModel):
-    """§11 — Gaver eller økonomiske fordeler >2000 NOK."""
-
-    gifts: list[Gift] = Field(default_factory=list)
-    raw_text: str = Field(description="Full verbatim text of the §11 entry")
-
-
-# --- §15: Andre forhold (Other matters) ---
-
-
-class OtherMattersSection(BaseModel):
-    """§15 — Andre forhold av berettiget interesse for allmennheten."""
-
-    raw_text: str = Field(description="Full verbatim text of the §15 entry")
-    summary: str | None = Field(
-        default=None, description="Brief characterization of the disclosure type"
-    )
 
 
 # --- Person entry ---
 
 
 class PersonEntry(BaseModel):
-    """One person's complete register entry for a given publication date."""
+    """One person's corporation-related register entry for a given publication date."""
 
     name: str = Field(description="Full name as printed: 'Etternavn, Fornavn'")
     party: str = Field(
-        description=(
-            "Party abbreviation: A, H, Sp, FrP, SV, V, R, MDG, KrF, Uav, PF"
-        ),
+        description="Party abbreviation: A, H, Sp, FrP, SV, V, R, MDG, KrF, Uav, PF",
     )
     district: str = Field(
         description="Electoral district (valgdistrikt): e.g. 'Oslo', 'Hordaland'"
@@ -377,23 +286,9 @@ class PersonEntry(BaseModel):
     self_employment: SelfEmploymentSection | None = Field(default=None, description="§3")
     paid_employment: PaidEmploymentSection | None = Field(default=None, description="§4")
     former_employer: FormerEmployerSection | None = Field(default=None, description="§5")
-    future_employer: FutureEmployerSection | None = Field(default=None, description="§6")
-    financial_support: FinancialSupportSection | None = Field(
-        default=None, description="§7"
-    )
-    business_property: BusinessPropertySection | None = Field(
-        default=None, description="§8"
-    )
-    company_interests: CompanyInterestsSection | None = Field(
-        default=None, description="§9"
-    )
+    business_property: BusinessPropertySection | None = Field(default=None, description="§8")
+    company_interests: CompanyInterestsSection | None = Field(default=None, description="§9")
     business_debt: BusinessDebtSection | None = Field(default=None, description="§9a")
-    foreign_travel: ForeignTravelSection | None = Field(default=None, description="§10")
-    gifts: GiftSection | None = Field(default=None, description="§11")
-    other_matters: OtherMattersSection | None = Field(default=None, description="§15")
-
-
-# --- Document-level ---
 
 
 # --- Org-centric extraction and matching ---
@@ -520,7 +415,7 @@ class RegisterPublication(BaseModel):
         description="Date from cover page: ISO format YYYY-MM-DD"
     )
     publication_date_raw: str = Field(
-        description="Date as printed on cover page: 'Ajourført pr. 3. januar 2025'"
+        description="Date as printed on cover page: 'Ajourfoert pr. 3. januar 2025'"
     )
     person_count: int = Field(description="Total number of person entries extracted")
     persons: list[PersonEntry] = Field(description="All person entries in document order")
